@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KegiatanKita - Galeri Sekolah Terpadu</title>
+    <!-- Tailwind CSS JIT (Just-In-Time) lebih ringan -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-font-smoothing: antialiased; }
+        
+        .gallery-scroll {
+            display: flex;
+            overflow-x: auto;
+            scroll-snap-type: x mandatory;
+            scroll-behavior: smooth;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+        }
+        .gallery-scroll::-webkit-scrollbar { display: none; }
+
+        .gallery-item {
+            flex: 0 0 85%;
+            scroll-snap-align: center;
+        }
+        @media (min-width: 768px) {
+            .gallery-item { flex: 0 0 60%; }
+        }
+
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4f46e5;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        
+        /* Skeleton loading effect */
+        .skeleton {
+            background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+        }
+        @keyframes loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Perbaikan untuk Google Apps Script Environment
+        const initFirebase = async () => {
+            try {
+                // Mengecek apakah config tersedia dari server GAS atau window
+                let config;
+                if (typeof __firebase_config !== 'undefined') {
+                    config = JSON.parse(__firebase_config);
+                } else {
+                    // Fallback jika dijalankan di luar environment khusus
+                    console.warn("Firebase config not found. Dashboard may not appear.");
+                    return;
+                }
+
+                const app = initializeApp(config);
+                const auth = getAuth(app);
+                const db = getFirestore(app);
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+                window.FirebaseServices = { 
+                    auth, db, appId, collection, addDoc, onSnapshot, query, doc, deleteDoc, 
+                    serverTimestamp, signInAnonymously, onAuthStateChanged, signInWithCustomToken 
+                };
+                window.dispatchEvent(new Event('firebase-ready'));
+            } catch (e) {
+                console.error("Firebase Initialization Error:", e);
+                // Memberitahu UI bahwa terjadi error inisialisasi
+                window.dispatchEvent(new CustomEvent('firebase-error', { detail: e.message }));
+            }
+        };
+
+        initFirebase();
+    </script>
+
+    <script>
+        const { useState, useEffect, useRef, createElement: h } = React;
+
+        const Icon = ({ name, size = 20, className = "" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide && iconRef.current) {
+                    iconRef.current.innerHTML = '';
+                    const i = document.createElement('i');
+                    const kebab = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+                    i.setAttribute('data-lucide', kebab);
+                    iconRef.current.appendChild(i);
+                    window.lucide.createIcons({
+                        attrs: { width: size, height: size, strokeWidth: 2, class: className },
+                        nameAttr: 'data-lucide'
+                    });
+                }
+            }, [name, size, className]);
+            return h('span', { ref: iconRef, className: "inline-flex items-center justify-center" });
+        };
+
+        const App = () => {
+            const [fbReady, setFbReady] = useState(!!window.FirebaseServices);
+            const [fbError, setFbError] = useState(null);
+            const [user, setUser] = useState(null);
+            const [currentAdmin, setCurrentAdmin] = useState(null);
+            const [items, setItems] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [showForm, setShowForm] = useState(false);
+            const [activeFilter, setActiveFilter] = useState('Semua');
+            const [selectedGallery, setSelectedGallery] = useState(null);
+            const [authModal, setAuthModal] = useState(false);
+            const [authInput, setAuthInput] = useState({ name: '', password: '' });
+            const [formData, setFormData] = useState({ title: '', photos: [null, null, null, null, null] });
+
+            useEffect(() => {
+                const handleReady = () => setFbReady(true);
+                const handleError = (e) => setFbError(e.detail);
+                window.addEventListener('firebase-ready', handleReady);
+                window.addEventListener('firebase-error', handleError);
+                return () => {
+                    window.removeEventListener('firebase-ready', handleReady);
+                    window.removeEventListener('firebase-error', handleError);
+                };
+            }, []);
+
+            useEffect(() => {
+                if (!fbReady) return;
+                const { auth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.FirebaseServices;
+                
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (e) {
+                        console.error("Auth error:", e);
+                    }
+                };
+
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                return () => unsubscribe();
+            }, [fbReady]);
+
+            useEffect(() => {
+                if (!user || !fbReady) return;
+                const { db, appId, collection, onSnapshot } = window.FirebaseServices;
+                const contentCol = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
+                
+                return onSnapshot(contentCol, (snap) => {
+                    const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+                    setItems(data);
+                    setLoading(false);
+                }, (err) => {
+                    console.error("Firestore error:", err);
+                    setLoading(false);
+                });
+            }, [user, fbReady]);
+
+            const handleFileChange = (i, e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const newPhotos = [...formData.photos];
+                    newPhotos[i] = reader.result;
+                    setFormData({ ...formData, photos: newPhotos });
+                };
+                reader.readAsDataURL(file);
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                const urls = formData.photos.filter(u => u !== null);
+                if (!urls.length || !user) return;
+
+                const { db, appId, collection, addDoc, serverTimestamp } = window.FirebaseServices;
+                try {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items'), {
+                        title: formData.title,
+                        school: currentAdmin,
+                        urls: urls,
+                        createdAt: serverTimestamp(),
+                        authorId: user.uid
+                    });
+                    setShowForm(false);
+                    setFormData({ title: '', photos: [null, null, null, null, null] });
+                } catch (e) {
+                    console.error("Submit error:", e);
+                }
+            };
+
+            const filteredItems = activeFilter === 'Semua' ? items : items.filter(i => i.school === activeFilter);
+            const schools = ['Semua', ...new Set(items.map(i => i.school))];
+
+            if (fbError) return h('div', { className: "min-h-screen flex items-center justify-center p-6 text-center" }, [
+                h('div', {}, [
+                    h('h1', { className: "text-red-500 font-bold mb-2" }, "Gagal Memuat Database"),
+                    h('p', { className: "text-slate-500 text-sm" }, fbError),
+                    h('p', { className: "mt-4 text-[10px] text-slate-400" }, "Pastikan Deployment ID dan Firebase Config sudah benar di Code.gs")
+                ])
+            ]);
+
+            if (!fbReady) return h('div', { className: "min-h-screen flex items-center justify-center bg-white" }, h('div', { className: "loader" }));
+
+            return h('div', { className: "min-h-screen pb-20" }, [
+                h('nav', { className: "bg-white/90 backdrop-blur-md px-6 h-16 flex items-center justify-between sticky top-0 z-50 border-b" }, [
+                    h('div', { className: "flex items-center gap-3" }, [
+                        h('div', { className: "w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white" }, h(Icon, { name: "GraduationCap", size: 16 })),
+                        h('h1', { className: "font-black text-xs uppercase tracking-tight" }, "Galeri TKA")
+                    ]),
+                    currentAdmin 
+                        ? h('button', { onClick: () => setCurrentAdmin(null), className: "text-[9px] font-black bg-slate-900 text-white px-4 py-2 rounded-lg" }, "LOGOUT")
+                        : h('button', { onClick: () => setAuthModal(true), className: "text-[9px] font-black border px-4 py-2 rounded-lg" }, "ADMIN")
+                ]),
+
+                h('main', { className: "p-6 max-w-6xl mx-auto" }, [
+                    h('header', { className: "text-center my-10" }, [
+                        h('h2', { className: "text-3xl font-black mb-2 uppercase" }, "Momen Terbaik"),
+                        h('div', { className: "flex flex-wrap justify-center gap-2 mt-6" }, 
+                            schools.map(s => h('button', { 
+                                key: s, 
+                                onClick: () => setActiveFilter(s),
+                                className: `px-4 py-2 rounded-xl text-[9px] font-black ${activeFilter === s ? 'bg-indigo-600 text-white' : 'bg-white border text-slate-500'}` 
+                            }, s.toUpperCase()))
+                        )
+                    ]),
+
+                    loading ? h('div', { className: "grid grid-cols-2 md:grid-cols-3 gap-6" }, 
+                        [1,2,3].map(i => h('div', { key: i, className: "aspect-square rounded-3xl skeleton" }))
+                    ) : h('div', { className: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6" }, 
+                        filteredItems.map(item => h('div', { 
+                            key: item.id, 
+                            className: "bg-white rounded-[2rem] overflow-hidden border shadow-sm cursor-pointer hover:shadow-md transition-shadow",
+                            onClick: () => setSelectedGallery(item)
+                        }, [
+                            h('div', { className: "aspect-[4/3] bg-slate-100" }, h('img', { src: item.urls[0], className: "w-full h-full object-cover", loading: "lazy" })),
+                            h('div', { className: "p-5" }, [
+                                h('p', { className: "text-[8px] font-black text-indigo-600 uppercase" }, item.school),
+                                h('h3', { className: "font-black text-slate-800" }, item.title)
+                            ])
+                        ]))
+                    ),
+
+                    currentAdmin && h('button', { 
+                        onClick: () => setShowForm(!showForm),
+                        className: "fixed bottom-8 right-8 w-14 h-14 bg-indigo-600 text-white rounded-full shadow-2xl flex items-center justify-center active:scale-90 transition-transform z-40"
+                    }, h(Icon, { name: showForm ? "X" : "Plus", size: 24 }))
+                ]),
+
+                showForm && h('div', { className: "fixed inset-0 z-[60] bg-white p-6 overflow-y-auto" }, [
+                    h('button', { onClick: () => setShowForm(false), className: "mb-6 font-black text-xs uppercase" }, "← Kembali"),
+                    h('form', { onSubmit: handleSubmit, className: "max-w-md mx-auto space-y-6" }, [
+                        h('input', { required: true, placeholder: "Judul Kegiatan", className: "w-full p-4 bg-slate-50 rounded-2xl border outline-none focus:ring-2 focus:ring-indigo-500", value: formData.title, onChange: e => setFormData({...formData, title: e.target.value}) }),
+                        h('div', { className: "grid grid-cols-3 gap-3" }, [0,1,2,3,4].map(i => h('div', { key: i, className: "aspect-square bg-slate-50 rounded-xl border-2 border-dashed flex items-center justify-center relative" }, [
+                            formData.photos[i] ? h('img', { src: formData.photos[i], className: "w-full h-full object-cover rounded-xl" }) : h(Icon, { name: "Camera", className: "text-slate-300" }),
+                            h('input', { type: "file", accept: "image/*", className: "absolute inset-0 opacity-0", onChange: e => handleFileChange(i, e) })
+                        ]))),
+                        h('button', { type: "submit", className: "w-full py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs" }, "Posting Sekarang")
+                    ])
+                ]),
+
+                selectedGallery && h('div', { className: "fixed inset-0 z-[100] bg-white flex flex-col" }, [
+                    h('div', { className: "p-6 border-b flex justify-between items-center" }, [
+                        h('h3', { className: "font-black" }, selectedGallery.title),
+                        h('button', { onClick: () => setSelectedGallery(null) }, h(Icon, { name: "X", size: 24 }))
+                    ]),
+                    h('div', { className: "flex-grow overflow-y-auto p-4 space-y-4 bg-slate-50" }, 
+                        selectedGallery.urls.map((u, i) => h('img', { key: i, src: u, className: "w-full rounded-2xl shadow-lg border-4 border-white", loading: "lazy" }))
+                    )
+                ]),
+
+                authModal && h('div', { className: "fixed inset-0 z-[110] bg-slate-900/50 backdrop-blur flex items-center justify-center p-6" }, 
+                    h('div', { className: "bg-white w-full max-w-xs p-8 rounded-[2rem]" }, [
+                        h('h3', { className: "font-black text-center mb-6" }, "AKSES ADMIN"),
+                        h('input', { placeholder: "Nama Sekolah", className: "w-full p-3 border rounded-xl mb-3 outline-none", onChange: e => setAuthInput({...authInput, name: e.target.value}) }),
+                        h('input', { type: "password", placeholder: "PIN / Password", className: "w-full p-3 border rounded-xl mb-6 outline-none", onChange: e => setAuthInput({...authInput, password: e.target.value}) }),
+                        h('button', { 
+                            className: "w-full py-3 bg-slate-900 text-white rounded-xl font-black text-xs hover:bg-indigo-600 transition-colors",
+                            onClick: () => { 
+                                if(authInput.name && authInput.password) {
+                                    setCurrentAdmin(authInput.name); 
+                                    setAuthModal(false); 
+                                }
+                            }
+                        }, "MASUK"),
+                        h('button', { className: "w-full mt-4 text-[10px] font-bold text-slate-400", onClick: () => setAuthModal(false) }, "BATAL")
+                    ])
+                )
+            ]);
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(h(App));
+    </script>
+</body>
+</html>
