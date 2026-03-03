@@ -4,14 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KegiatanKita - Galeri Sekolah Terpadu</title>
-    <!-- Tailwind CSS JIT (Just-In-Time) lebih ringan -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-font-smoothing: antialiased; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
         
         .gallery-scroll {
             display: flex;
@@ -26,28 +26,18 @@
         .gallery-item {
             flex: 0 0 85%;
             scroll-snap-align: center;
+            transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
         }
         @media (min-width: 768px) {
             .gallery-item { flex: 0 0 60%; }
         }
 
-        .loader {
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #4f46e5;
-            border-radius: 50%;
-            width: 24px;
-            height: 24px;
-            animation: spin 0.8s linear infinite;
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
         }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-        
-        /* Skeleton loading effect */
-        .skeleton {
-            background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
-            background-size: 200% 100%;
-            animation: loading 1.5s infinite;
-        }
-        @keyframes loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .animate-shake { animation: shake 0.2s ease-in-out 0s 2; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900">
@@ -58,41 +48,21 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Perbaikan untuk Google Apps Script Environment
-        const initFirebase = async () => {
-            try {
-                // Mengecek apakah config tersedia dari server GAS atau window
-                let config;
-                if (typeof __firebase_config !== 'undefined') {
-                    config = JSON.parse(__firebase_config);
-                } else {
-                    // Fallback jika dijalankan di luar environment khusus
-                    console.warn("Firebase config not found. Dashboard may not appear.");
-                    return;
-                }
+        // Global Firebase Config dari Environment
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-                const app = initializeApp(config);
-                const auth = getAuth(app);
-                const db = getFirestore(app);
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-                window.FirebaseServices = { 
-                    auth, db, appId, collection, addDoc, onSnapshot, query, doc, deleteDoc, 
-                    serverTimestamp, signInAnonymously, onAuthStateChanged, signInWithCustomToken 
-                };
-                window.dispatchEvent(new Event('firebase-ready'));
-            } catch (e) {
-                console.error("Firebase Initialization Error:", e);
-                // Memberitahu UI bahwa terjadi error inisialisasi
-                window.dispatchEvent(new CustomEvent('firebase-error', { detail: e.message }));
-            }
+        window.FirebaseServices = { 
+            auth, db, appId, collection, addDoc, onSnapshot, query, doc, deleteDoc, 
+            serverTimestamp, signInAnonymously, onAuthStateChanged, signInWithCustomToken 
         };
-
-        initFirebase();
     </script>
 
-    <script>
-        const { useState, useEffect, useRef, createElement: h } = React;
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
 
         const Icon = ({ name, size = 20, className = "" }) => {
             const iconRef = useRef(null);
@@ -109,36 +79,36 @@
                     });
                 }
             }, [name, size, className]);
-            return h('span', { ref: iconRef, className: "inline-flex items-center justify-center" });
+            return <span ref={iconRef} className="inline-flex items-center justify-center" />;
         };
 
         const App = () => {
-            const [fbReady, setFbReady] = useState(!!window.FirebaseServices);
-            const [fbError, setFbError] = useState(null);
             const [user, setUser] = useState(null);
             const [currentAdmin, setCurrentAdmin] = useState(null);
+            const [registeredSchools, setRegisteredSchools] = useState([
+                { name: "TKA Al-Ikhlas", password: "123" },
+                { name: "TKA An-Nur", password: "123" }
+            ]);
+            
+            const [authMode, setAuthMode] = useState('login');
+            const [showAuthModal, setShowAuthModal] = useState(false);
+            const [authInput, setAuthInput] = useState({ name: '', password: '' });
+            const [authError, setAuthError] = useState("");
+
             const [items, setItems] = useState([]);
-            const [loading, setLoading] = useState(true);
             const [showForm, setShowForm] = useState(false);
             const [activeFilter, setActiveFilter] = useState('Semua');
             const [selectedGallery, setSelectedGallery] = useState(null);
-            const [authModal, setAuthModal] = useState(false);
-            const [authInput, setAuthInput] = useState({ name: '', password: '' });
-            const [formData, setFormData] = useState({ title: '', photos: [null, null, null, null, null] });
+            const scrollRef = useRef(null);
+            const [loading, setLoading] = useState(true);
 
-            useEffect(() => {
-                const handleReady = () => setFbReady(true);
-                const handleError = (e) => setFbError(e.detail);
-                window.addEventListener('firebase-ready', handleReady);
-                window.addEventListener('firebase-error', handleError);
-                return () => {
-                    window.removeEventListener('firebase-ready', handleReady);
-                    window.removeEventListener('firebase-error', handleError);
-                };
-            }, []);
+            const [formData, setFormData] = useState({ 
+                title: '', 
+                photos: [null, null, null, null, null] 
+            });
 
+            // 1. Initial Auth - Mengikuti Aturan Wajib Aturan 3
             useEffect(() => {
-                if (!fbReady) return;
                 const { auth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.FirebaseServices;
                 
                 const initAuth = async () => {
@@ -148,167 +118,311 @@
                         } else {
                             await signInAnonymously(auth);
                         }
-                    } catch (e) {
-                        console.error("Auth error:", e);
+                    } catch (err) {
+                        console.error("Auth Error:", err);
                     }
                 };
 
                 initAuth();
-                const unsubscribe = onAuthStateChanged(auth, setUser);
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    if (u) {
+                        setUser(u);
+                    }
+                });
                 return () => unsubscribe();
-            }, [fbReady]);
+            }, []);
 
+            // 2. Fetch Data dari Firestore (Hanya setelah User terautentikasi)
             useEffect(() => {
-                if (!user || !fbReady) return;
+                if (!user) return; // Mencegah "Missing permissions" karena query tanpa auth
+
                 const { db, appId, collection, onSnapshot } = window.FirebaseServices;
+                // Menggunakan path yang sesuai Aturan 1
                 const contentCol = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
                 
-                return onSnapshot(contentCol, (snap) => {
-                    const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                    data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-                    setItems(data);
+                const unsubscribe = onSnapshot(contentCol, (snapshot) => {
+                    const data = snapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+                    // Sortir di memori sesuai Aturan 2
+                    const sorted = data.sort((a, b) => {
+                        const timeA = a.createdAt?.seconds || 0;
+                        const timeB = b.createdAt?.seconds || 0;
+                        return timeB - timeA;
+                    });
+                    setItems(sorted);
                     setLoading(false);
-                }, (err) => {
-                    console.error("Firestore error:", err);
+                }, (error) => {
+                    console.error("Firestore Error:", error);
                     setLoading(false);
                 });
-            }, [user, fbReady]);
 
-            const handleFileChange = (i, e) => {
+                return () => unsubscribe();
+            }, [user]);
+
+            const schoolsList = ['Semua', ...new Set(registeredSchools.map(s => s.name))];
+
+            const handleAuth = (e) => {
+                e.preventDefault();
+                setAuthError("");
+
+                if (authMode === 'register') {
+                    const exists = registeredSchools.find(s => s.name.toLowerCase() === authInput.name.toLowerCase());
+                    if (exists) {
+                        setAuthError("Nama sekolah sudah terdaftar!");
+                        return;
+                    }
+                    setRegisteredSchools([...registeredSchools, { ...authInput }]);
+                    setCurrentAdmin(authInput.name);
+                    setShowAuthModal(false);
+                    setAuthInput({ name: '', password: '' });
+                } else {
+                    const school = registeredSchools.find(s => s.name.toLowerCase() === authInput.name.toLowerCase() && s.password === authInput.password);
+                    if (school) {
+                        setCurrentAdmin(school.name);
+                        setShowAuthModal(false);
+                        setAuthInput({ name: '', password: '' });
+                    } else {
+                        setAuthError("Nama sekolah atau password salah!");
+                    }
+                }
+            };
+
+            const handleLogout = () => {
+                setCurrentAdmin(null);
+                setShowForm(false);
+            };
+
+            const handleDelete = async (id) => {
+                if (!user) return;
+                const { db, appId, doc, deleteDoc } = window.FirebaseServices;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_items', id));
+                } catch (e) {
+                    console.error(e);
+                }
+            };
+
+            const handleFileChange = (index, e) => {
                 const file = e.target.files[0];
                 if (!file) return;
                 const reader = new FileReader();
                 reader.onloadend = () => {
-                    const newPhotos = [...formData.photos];
-                    newPhotos[i] = reader.result;
-                    setFormData({ ...formData, photos: newPhotos });
+                    const updatedPhotos = [...formData.photos];
+                    updatedPhotos[index] = reader.result;
+                    setFormData({ ...formData, photos: updatedPhotos });
                 };
                 reader.readAsDataURL(file);
             };
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
-                const urls = formData.photos.filter(u => u !== null);
-                if (!urls.length || !user) return;
-
+                if (!user) return;
+                
+                const finalUrls = formData.photos.filter(url => url !== null);
+                if (finalUrls.length === 0) return;
+                
                 const { db, appId, collection, addDoc, serverTimestamp } = window.FirebaseServices;
+                
                 try {
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items'), {
                         title: formData.title,
                         school: currentAdmin,
-                        urls: urls,
+                        urls: finalUrls,
                         createdAt: serverTimestamp(),
                         authorId: user.uid
                     });
+                    
                     setShowForm(false);
                     setFormData({ title: '', photos: [null, null, null, null, null] });
-                } catch (e) {
-                    console.error("Submit error:", e);
+                } catch (err) {
+                    console.error("Gagal mengunggah:", err);
                 }
             };
 
-            const filteredItems = activeFilter === 'Semua' ? items : items.filter(i => i.school === activeFilter);
-            const schools = ['Semua', ...new Set(items.map(i => i.school))];
+            const filteredItems = activeFilter === 'Semua' 
+                ? items 
+                : items.filter(item => item.school === activeFilter);
 
-            if (fbError) return h('div', { className: "min-h-screen flex items-center justify-center p-6 text-center" }, [
-                h('div', {}, [
-                    h('h1', { className: "text-red-500 font-bold mb-2" }, "Gagal Memuat Database"),
-                    h('p', { className: "text-slate-500 text-sm" }, fbError),
-                    h('p', { className: "mt-4 text-[10px] text-slate-400" }, "Pastikan Deployment ID dan Firebase Config sudah benar di Code.gs")
-                ])
-            ]);
+            const scrollGallery = (direction) => {
+                if (scrollRef.current) {
+                    const scrollAmount = scrollRef.current.offsetWidth * 0.6;
+                    scrollRef.current.scrollBy({
+                        left: direction === 'left' ? -scrollAmount : scrollAmount,
+                        behavior: 'smooth'
+                    });
+                }
+            };
 
-            if (!fbReady) return h('div', { className: "min-h-screen flex items-center justify-center bg-white" }, h('div', { className: "loader" }));
+            return (
+                <div className="min-h-screen flex flex-col bg-[#f8fafc] pb-20">
+                    <nav className="bg-white/70 backdrop-blur-md px-6 h-16 flex items-center justify-between sticky top-0 z-50 border-b border-slate-100">
+                        <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-md">
+                                <Icon name="GraduationCap" size={18} />
+                            </div>
+                            <div className="hidden sm:block">
+                                <h1 className="font-extrabold text-slate-800 text-xs tracking-tight uppercase">Galeri TKA</h1>
+                                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest leading-none">Kab. Tanah Bumbu</p>
+                            </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-2">
+                            {currentAdmin ? (
+                                <>
+                                    <div className="flex flex-col items-end mr-2">
+                                        <span className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">Admin</span>
+                                        <span className="text-[10px] font-bold text-slate-700">{currentAdmin}</span>
+                                    </div>
+                                    <button onClick={handleLogout} className="px-4 py-2 rounded-xl text-[9px] font-black tracking-widest bg-slate-900 text-white shadow-lg transition-all active:scale-95">LOGOUT</button>
+                                </>
+                            ) : (
+                                <button onClick={() => { setAuthMode('login'); setShowAuthModal(true); }} className="px-4 py-2 rounded-xl text-[9px] font-black tracking-widest bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-all active:scale-95">AKSES ADMIN</button>
+                            )}
+                        </div>
+                    </nav>
 
-            return h('div', { className: "min-h-screen pb-20" }, [
-                h('nav', { className: "bg-white/90 backdrop-blur-md px-6 h-16 flex items-center justify-between sticky top-0 z-50 border-b" }, [
-                    h('div', { className: "flex items-center gap-3" }, [
-                        h('div', { className: "w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white" }, h(Icon, { name: "GraduationCap", size: 16 })),
-                        h('h1', { className: "font-black text-xs uppercase tracking-tight" }, "Galeri TKA")
-                    ]),
-                    currentAdmin 
-                        ? h('button', { onClick: () => setCurrentAdmin(null), className: "text-[9px] font-black bg-slate-900 text-white px-4 py-2 rounded-lg" }, "LOGOUT")
-                        : h('button', { onClick: () => setAuthModal(true), className: "text-[9px] font-black border px-4 py-2 rounded-lg" }, "ADMIN")
-                ]),
+                    <main className="p-6 max-w-6xl mx-auto w-full flex-grow">
+                        <div className="mt-10 mb-12 flex flex-col items-center text-center">
+                            <h2 className="text-3xl md:text-5xl font-black text-slate-900 uppercase tracking-tighter mb-4 leading-tight">
+                                Dokumentasi <span className="text-indigo-600">Terbaik</span> Santri Kami
+                            </h2>
+                            <div className="flex flex-wrap justify-center gap-2 mt-2">
+                                {schoolsList.map(school => (
+                                    <button key={school} onClick={() => setActiveFilter(school)} className={`px-5 py-2.5 rounded-xl text-[9px] font-black transition-all ${activeFilter === school ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-slate-500 border border-slate-100 hover:border-indigo-200'}`}>
+                                        {school.toUpperCase()}
+                                    </button>
+                                ))}
+                                {currentAdmin && (
+                                    <button onClick={() => setShowForm(!showForm)} className="px-5 py-2.5 rounded-xl text-[9px] font-black bg-slate-900 text-white shadow-md flex items-center gap-2 hover:bg-black transition-all">
+                                        <Icon name={showForm ? "X" : "Plus"} size={12} /> {showForm ? 'BATAL' : 'TAMBAH'}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
 
-                h('main', { className: "p-6 max-w-6xl mx-auto" }, [
-                    h('header', { className: "text-center my-10" }, [
-                        h('h2', { className: "text-3xl font-black mb-2 uppercase" }, "Momen Terbaik"),
-                        h('div', { className: "flex flex-wrap justify-center gap-2 mt-6" }, 
-                            schools.map(s => h('button', { 
-                                key: s, 
-                                onClick: () => setActiveFilter(s),
-                                className: `px-4 py-2 rounded-xl text-[9px] font-black ${activeFilter === s ? 'bg-indigo-600 text-white' : 'bg-white border text-slate-500'}` 
-                            }, s.toUpperCase()))
-                        )
-                    ]),
+                        {showForm && currentAdmin && (
+                            <div className="mb-16 bg-white p-8 rounded-[2rem] border border-slate-100 shadow-xl max-w-3xl mx-auto animate-in fade-in slide-in-from-top-4">
+                                <form onSubmit={handleSubmit} className="space-y-6">
+                                    <div className="space-y-1.5">
+                                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Judul Kegiatan</label>
+                                        <input required placeholder="Contoh: Gebyar Muharram 1446H" className="w-full p-3.5 bg-slate-50 rounded-xl border border-slate-100 outline-none focus:border-indigo-500 transition-all font-bold text-sm" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} />
+                                    </div>
+                                    <div className="grid grid-cols-5 gap-2">
+                                        {[0,1,2,3,4].map(i => (
+                                            <div key={i} className="aspect-square relative rounded-xl border-2 border-dashed border-slate-100 overflow-hidden flex items-center justify-center bg-slate-50 hover:bg-indigo-50 transition-colors group">
+                                                {formData.photos[i] ? <img src={formData.photos[i]} className="w-full h-full object-cover" /> : <Icon name="Camera" size={16} className="text-slate-300 group-hover:text-indigo-400" />}
+                                                <input type="file" accept="image/*" onChange={(e) => handleFileChange(i, e)} className="absolute inset-0 opacity-0 cursor-pointer" />
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <button type="submit" className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-indigo-700 shadow-lg transition-all">Publish sebagai {currentAdmin}</button>
+                                </form>
+                            </div>
+                        )}
 
-                    loading ? h('div', { className: "grid grid-cols-2 md:grid-cols-3 gap-6" }, 
-                        [1,2,3].map(i => h('div', { key: i, className: "aspect-square rounded-3xl skeleton" }))
-                    ) : h('div', { className: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6" }, 
-                        filteredItems.map(item => h('div', { 
-                            key: item.id, 
-                            className: "bg-white rounded-[2rem] overflow-hidden border shadow-sm cursor-pointer hover:shadow-md transition-shadow",
-                            onClick: () => setSelectedGallery(item)
-                        }, [
-                            h('div', { className: "aspect-[4/3] bg-slate-100" }, h('img', { src: item.urls[0], className: "w-full h-full object-cover", loading: "lazy" })),
-                            h('div', { className: "p-5" }, [
-                                h('p', { className: "text-[8px] font-black text-indigo-600 uppercase" }, item.school),
-                                h('h3', { className: "font-black text-slate-800" }, item.title)
-                            ])
-                        ]))
-                    ),
+                        {loading ? (
+                            <div className="flex justify-center py-20">
+                                <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                                {filteredItems.map(item => (
+                                    <div key={item.id} className="relative group">
+                                        <div onClick={() => setSelectedGallery(item)} className="bg-white rounded-[2rem] overflow-hidden border border-slate-100 shadow-sm hover:shadow-xl transition-all duration-500 cursor-pointer">
+                                            <div className="aspect-[16/11] relative overflow-hidden bg-slate-100">
+                                                <img src={item.urls[0]} className="w-full h-full object-cover" />
+                                                <div className="absolute inset-0 bg-gradient-to-t from-slate-900/40 to-transparent flex items-end p-6">
+                                                    <span className="text-[8px] font-black text-white bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-lg uppercase tracking-widest">Lihat Detail</span>
+                                                </div>
+                                            </div>
+                                            <div className="p-6">
+                                                <p className="text-indigo-600 text-[8px] font-black uppercase tracking-widest mb-1">{item.school}</p>
+                                                <h3 className="text-lg font-black text-slate-800 leading-tight line-clamp-1">{item.title}</h3>
+                                            </div>
+                                        </div>
+                                        {currentAdmin === item.school && (
+                                            <button onClick={() => handleDelete(item.id)} className="absolute -top-2 -right-2 w-10 h-10 bg-rose-500 text-white rounded-xl shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all opacity-0 group-hover:opacity-100">
+                                                <Icon name="Trash2" size={16} />
+                                            </button>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </main>
 
-                    currentAdmin && h('button', { 
-                        onClick: () => setShowForm(!showForm),
-                        className: "fixed bottom-8 right-8 w-14 h-14 bg-indigo-600 text-white rounded-full shadow-2xl flex items-center justify-center active:scale-90 transition-transform z-40"
-                    }, h(Icon, { name: showForm ? "X" : "Plus", size: 24 }))
-                ]),
+                    {showAuthModal && (
+                        <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+                            <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95">
+                                <div className="text-center mb-6">
+                                    <div className="w-16 h-16 bg-indigo-50 rounded-3xl flex items-center justify-center mx-auto text-indigo-600 mb-4 border border-indigo-100">
+                                        <Icon name={authMode === 'login' ? "Lock" : "UserPlus"} size={28} />
+                                    </div>
+                                    <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">{authMode === 'login' ? 'Login Admin' : 'Daftar Sekolah'}</h3>
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">{authMode === 'login' ? 'Masuk untuk mengelola galeri' : 'Buat akun pengelola sekolah baru'}</p>
+                                </div>
+                                <form onSubmit={handleAuth} className="space-y-4">
+                                    <div className="space-y-3">
+                                        <div className="space-y-1">
+                                            <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Nama Sekolah</label>
+                                            <input required type="text" placeholder="TKA Al-Fatih" className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:border-indigo-500 font-bold text-sm" value={authInput.name} onChange={(e) => setAuthInput({...authInput, name: e.target.value})} />
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Password</label>
+                                            <input required type="password" placeholder="••••••••" className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:border-indigo-500 font-bold text-sm" value={authInput.password} onChange={(e) => setAuthInput({...authInput, password: e.target.value})} />
+                                        </div>
+                                    </div>
+                                    {authError && <div className="p-3 bg-rose-50 rounded-xl border border-rose-100 animate-shake"><p className="text-[9px] font-black text-rose-500 uppercase tracking-widest text-center">{authError}</p></div>}
+                                    <button type="submit" className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] shadow-xl hover:bg-indigo-600 transition-all active:scale-95">{authMode === 'login' ? 'Masuk Sekarang' : 'Daftar & Masuk'}</button>
+                                    <div className="pt-2 text-center">
+                                        <button type="button" onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(""); }} className="text-[9px] font-black text-indigo-600 uppercase tracking-widest hover:underline">{authMode === 'login' ? 'Sekolah belum terdaftar? Klik di sini' : 'Sudah punya akun? Login'}</button>
+                                    </div>
+                                    <button type="button" onClick={() => setShowAuthModal(false)} className="w-full py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest hover:text-slate-600">Batalkan</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
 
-                showForm && h('div', { className: "fixed inset-0 z-[60] bg-white p-6 overflow-y-auto" }, [
-                    h('button', { onClick: () => setShowForm(false), className: "mb-6 font-black text-xs uppercase" }, "← Kembali"),
-                    h('form', { onSubmit: handleSubmit, className: "max-w-md mx-auto space-y-6" }, [
-                        h('input', { required: true, placeholder: "Judul Kegiatan", className: "w-full p-4 bg-slate-50 rounded-2xl border outline-none focus:ring-2 focus:ring-indigo-500", value: formData.title, onChange: e => setFormData({...formData, title: e.target.value}) }),
-                        h('div', { className: "grid grid-cols-3 gap-3" }, [0,1,2,3,4].map(i => h('div', { key: i, className: "aspect-square bg-slate-50 rounded-xl border-2 border-dashed flex items-center justify-center relative" }, [
-                            formData.photos[i] ? h('img', { src: formData.photos[i], className: "w-full h-full object-cover rounded-xl" }) : h(Icon, { name: "Camera", className: "text-slate-300" }),
-                            h('input', { type: "file", accept: "image/*", className: "absolute inset-0 opacity-0", onChange: e => handleFileChange(i, e) })
-                        ]))),
-                        h('button', { type: "submit", className: "w-full py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs" }, "Posting Sekarang")
-                    ])
-                ]),
-
-                selectedGallery && h('div', { className: "fixed inset-0 z-[100] bg-white flex flex-col" }, [
-                    h('div', { className: "p-6 border-b flex justify-between items-center" }, [
-                        h('h3', { className: "font-black" }, selectedGallery.title),
-                        h('button', { onClick: () => setSelectedGallery(null) }, h(Icon, { name: "X", size: 24 }))
-                    ]),
-                    h('div', { className: "flex-grow overflow-y-auto p-4 space-y-4 bg-slate-50" }, 
-                        selectedGallery.urls.map((u, i) => h('img', { key: i, src: u, className: "w-full rounded-2xl shadow-lg border-4 border-white", loading: "lazy" }))
-                    )
-                ]),
-
-                authModal && h('div', { className: "fixed inset-0 z-[110] bg-slate-900/50 backdrop-blur flex items-center justify-center p-6" }, 
-                    h('div', { className: "bg-white w-full max-w-xs p-8 rounded-[2rem]" }, [
-                        h('h3', { className: "font-black text-center mb-6" }, "AKSES ADMIN"),
-                        h('input', { placeholder: "Nama Sekolah", className: "w-full p-3 border rounded-xl mb-3 outline-none", onChange: e => setAuthInput({...authInput, name: e.target.value}) }),
-                        h('input', { type: "password", placeholder: "PIN / Password", className: "w-full p-3 border rounded-xl mb-6 outline-none", onChange: e => setAuthInput({...authInput, password: e.target.value}) }),
-                        h('button', { 
-                            className: "w-full py-3 bg-slate-900 text-white rounded-xl font-black text-xs hover:bg-indigo-600 transition-colors",
-                            onClick: () => { 
-                                if(authInput.name && authInput.password) {
-                                    setCurrentAdmin(authInput.name); 
-                                    setAuthModal(false); 
-                                }
-                            }
-                        }, "MASUK"),
-                        h('button', { className: "w-full mt-4 text-[10px] font-bold text-slate-400", onClick: () => setAuthModal(false) }, "BATAL")
-                    ])
-                )
-            ]);
+                    {selectedGallery && (
+                        <div className="fixed inset-0 z-[100] bg-white animate-in fade-in duration-300 flex flex-col overflow-hidden">
+                            <div className="px-6 md:px-12 py-5 flex items-center justify-between border-b border-slate-50">
+                                <div>
+                                    <span className="text-indigo-600 text-[9px] font-black uppercase tracking-widest">{selectedGallery.school}</span>
+                                    <h2 className="text-xl md:text-2xl font-black text-slate-900 uppercase tracking-tight">{selectedGallery.title}</h2>
+                                </div>
+                                <button onClick={() => setSelectedGallery(null)} className="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center hover:bg-rose-500 transition-all shadow-lg active:scale-90">
+                                    <Icon name="X" size={24} />
+                                </button>
+                            </div>
+                            <div className="flex-grow relative flex items-center bg-slate-50/20">
+                                <div className="absolute inset-x-4 md:inset-x-12 z-10 flex justify-between pointer-events-none">
+                                    <button onClick={() => scrollGallery('left')} className="w-12 h-12 md:w-16 md:h-16 rounded-2xl bg-white shadow-xl flex items-center justify-center pointer-events-auto border border-slate-100 active:scale-90 transition-transform"><Icon name="ChevronLeft" size={24} /></button>
+                                    <button onClick={() => scrollGallery('right')} className="w-12 h-12 md:w-16 md:h-16 rounded-2xl bg-white shadow-xl flex items-center justify-center pointer-events-auto border border-slate-100 active:scale-90 transition-transform"><Icon name="ChevronRight" size={24} /></button>
+                                </div>
+                                <div ref={scrollRef} className="gallery-scroll w-full h-full items-center px-6 md:px-24 gap-6 md:gap-12 py-8">
+                                    {selectedGallery.urls.map((url, idx) => (
+                                        <div key={idx} className="gallery-item">
+                                            <div className="relative aspect-[16/10] max-h-[60vh] rounded-[2.5rem] overflow-hidden shadow-2xl border-4 border-white ring-1 ring-slate-100 mx-auto w-full">
+                                                <img src={url} className="w-full h-full object-cover" />
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <div className="flex-none w-10 md:w-20"></div>
+                                </div>
+                            </div>
+                            <div className="bg-white border-t border-slate-50 pt-6 pb-10 px-6 flex flex-col items-center">
+                                <button onClick={() => setSelectedGallery(null)} className="px-12 py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl hover:bg-indigo-600 transition-all">Tutup Galeri</button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
         };
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(h(App));
+        root.render(<App />);
     </script>
 </body>
 </html>
